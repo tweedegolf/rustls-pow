@@ -23,8 +23,8 @@ use crate::msgs::enums::{Compression, ExtensionType, NamedGroup};
 #[cfg(feature = "tls12")]
 use crate::msgs::handshake::SessionId;
 use crate::msgs::handshake::{
-    ClientHelloPayload, ConvertProtocolNameList, ConvertServerNameList, HandshakePayload,
-    KeyExchangeAlgorithm, Random, ServerExtension,
+    ClientHelloPayload, ClientPuzzleChallenge, ConvertProtocolNameList, ConvertServerNameList,
+    HandshakePayload, KeyExchangeAlgorithm, Random, ServerExtension,
 };
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
@@ -213,6 +213,7 @@ pub(super) struct ExpectClientHello {
     #[cfg(feature = "tls12")]
     pub(super) using_ems: bool,
     pub(super) done_retry: bool,
+    pub(super) challenge: Option<ClientPuzzleChallenge>,
     pub(super) send_tickets: usize,
 }
 
@@ -233,6 +234,7 @@ impl ExpectClientHello {
             #[cfg(feature = "tls12")]
             using_ems: false,
             done_retry: false,
+            challenge: None,
             send_tickets: 0,
         }
     }
@@ -383,6 +385,7 @@ impl ExpectClientHello {
                 suite,
                 randoms,
                 done_retry: self.done_retry,
+                challenge: self.challenge,
                 send_tickets: self.send_tickets,
                 extra_exts: self.extra_exts,
             }

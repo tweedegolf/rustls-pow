@@ -43,8 +43,8 @@ mod client_hello {
     use crate::msgs::enums::{Compression, NamedGroup, PSKKeyExchangeMode};
     use crate::msgs::handshake::{
         CertReqExtension, CertificatePayloadTls13, CertificateRequestPayloadTls13,
-        ClientHelloPayload, HelloRetryExtension, HelloRetryRequest, KeyShareEntry, Random,
-        ServerExtension, ServerHelloPayload, SessionId,
+        ClientHelloPayload, ClientPuzzleChallenge, ClientPuzzleExtension, HelloRetryExtension,
+        HelloRetryRequest, KeyShareEntry, Random, ServerExtension, ServerHelloPayload, SessionId,
     };
     use crate::server::common::ActiveCertifiedKey;
     use crate::sign;
@@ -66,6 +66,7 @@ mod client_hello {
         pub(in crate::server) suite: &'static Tls13CipherSuite,
         pub(in crate::server) randoms: ConnectionRandoms,
         pub(in crate::server) done_retry: bool,
+        pub(in crate::server) challenge: Option<ClientPuzzleChallenge>,
         pub(in crate::server) send_tickets: usize,
         pub(in crate::server) extra_exts: Vec<ServerExtension>,
     }
@@ -195,6 +196,19 @@ mod client_hello {
                 (share.group == selected_kxg.name()).then_some((share, selected_kxg))
             });
 
+            // Force hrr if the client hasn't solved a required puzzle yet
+            let chosen_share_and_kxg = if let (Some(challenge), Some(solution)) =
+                (&self.challenge, client_hello.puzzle_solution())
+            {
+                if challenge.check(&solution) {
+                    chosen_share_and_kxg
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let chosen_share_and_kxg = match chosen_share_and_kxg {
                 Some(s) => s,
                 None => {
@@ -209,12 +223,16 @@ mod client_hello {
                         ));
                     }
 
+                    let challenge =
+                        ClientPuzzleChallenge::new_cookie(self.config.provider.secure_random)?;
+
                     emit_hello_retry_request(
                         &mut self.transcript,
                         self.suite,
                         client_hello.session_id,
                         cx.common,
                         selected_kxg.name(),
+                        Some(challenge.clone()),
                     );
                     emit_fake_ccs(cx.common);
 
@@ -228,6 +246,7 @@ mod client_hello {
                         #[cfg(feature = "tls12")]
                         using_ems: false,
                         done_retry: true,
+                        challenge: Some(challenge),
                         send_tickets: self.send_tickets,
                         extra_exts: self.extra_exts,
                     });
@@ -582,6 +601,7 @@ mod client_hello {
         session_id: SessionId,
         common: &mut CommonState,
         group: NamedGroup,
+        challenge: Option<ClientPuzzleChallenge>,
     ) {
         let mut req = HelloRetryRequest {
             legacy_version: ProtocolVersion::TLSv1_2,
@@ -596,6 +616,12 @@ mod client_hello {
             .push(HelloRetryExtension::SupportedVersions(
                 ProtocolVersion::TLSv1_3,
             ));
+        if let Some(challenge) = challenge {
+            req.extensions
+                .push(HelloRetryExtension::ClientPuzzle(
+                    ClientPuzzleExtension::from_challenge(challenge),
+                ));
+        }
 
         let m = Message {
             version: ProtocolVersion::TLSv1_2,
