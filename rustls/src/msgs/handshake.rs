@@ -23,13 +23,13 @@ use crate::log::warn;
 use crate::msgs::base::{Payload, PayloadU16, PayloadU24, PayloadU8};
 use crate::msgs::codec::{self, Codec, LengthPrefixedBuffer, ListLength, Reader, TlsListElement};
 use crate::msgs::enums::{
-    CertificateStatusType, ClientCertificateType, Compression, ECCurveType, ECPointFormat,
-    EchVersion, ExtensionType, HpkeAead, HpkeKdf, HpkeKem, KeyUpdateRequest, NamedGroup,
-    PSKKeyExchangeMode, ServerNameType,
+    CertificateStatusType, ClientCertificateType, ClientPuzzleType, Compression, ECCurveType,
+    ECPointFormat, EchVersion, ExtensionType, HpkeAead, HpkeKdf, HpkeKem, KeyUpdateRequest,
+    NamedGroup, PSKKeyExchangeMode, ServerNameType,
 };
-use crate::rand;
 use crate::verify::DigitallySignedStruct;
 use crate::x509::wrap_in_sequence;
+use crate::{rand, Error};
 
 /// Create a newtype wrapper around a given type.
 ///
@@ -522,6 +522,111 @@ impl CertificateStatusRequest {
     }
 }
 
+// TLS client puzzles draft
+
+impl TlsListElement for ClientPuzzleType {
+    const SIZE_LEN: ListLength = ListLength::U8;
+}
+
+#[derive(Clone, Debug)]
+pub struct ClientPuzzleExtension {
+    puzzle_type: Vec<ClientPuzzleType>,
+    client_puzzle_challenge_response: PayloadU16,
+}
+
+impl Codec<'_> for ClientPuzzleExtension {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.puzzle_type.encode(bytes);
+        self.client_puzzle_challenge_response
+            .encode(bytes);
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, InvalidMessage> {
+        Ok(Self {
+            puzzle_type: Vec::read(r)?,
+            client_puzzle_challenge_response: PayloadU16::read(r)?,
+        })
+    }
+}
+
+impl ClientPuzzleExtension {
+    pub fn from_challenge(challenge: ClientPuzzleChallenge) -> Self {
+        match challenge {
+            ClientPuzzleChallenge::Cookie(challenge) => Self {
+                puzzle_type: vec![ClientPuzzleType::COOKIE],
+                client_puzzle_challenge_response: PayloadU16::new(challenge),
+            },
+        }
+    }
+
+    pub fn from_solution(solution: ClientPuzzleChallenge) -> Self {
+        match solution {
+            ClientPuzzleChallenge::Cookie(solution) => Self {
+                puzzle_type: vec![ClientPuzzleType::COOKIE],
+                client_puzzle_challenge_response: PayloadU16::new(solution),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ClientPuzzleChallenge {
+    Cookie(Vec<u8>),
+}
+
+#[derive(Debug, Clone)]
+pub enum ClientPuzzleSolution {
+    Cookie(Vec<u8>),
+}
+
+impl ClientPuzzleChallenge {
+    pub fn new_cookie(secure_random: &dyn SecureRandom) -> Result<Self, Error> {
+        let mut challenge = vec![0; 16];
+        secure_random.fill(&mut challenge)?;
+        Ok(Self::Cookie(challenge))
+    }
+
+    pub fn from_extension(puzzle: &ClientPuzzleExtension) -> Option<Self> {
+        match &puzzle.puzzle_type[..] {
+            [ClientPuzzleType::COOKIE] => Some(Self::Cookie(
+                puzzle
+                    .client_puzzle_challenge_response
+                    .0
+                    .clone(),
+            )),
+            _ => None,
+        }
+    }
+
+    pub fn solve(self) -> ClientPuzzleSolution {
+        match self {
+            Self::Cookie(challenge) => ClientPuzzleSolution::Cookie(challenge),
+        }
+    }
+
+    pub fn check(&self, solution: &ClientPuzzleSolution) -> bool {
+        match (self, solution) {
+            (Self::Cookie(challenge), ClientPuzzleSolution::Cookie(response)) => {
+                challenge == response
+            }
+        }
+    }
+}
+
+impl ClientPuzzleSolution {
+    pub fn from_extension(puzzle: &ClientPuzzleExtension) -> Option<Self> {
+        match &puzzle.puzzle_type[..] {
+            [ClientPuzzleType::COOKIE] => Some(Self::Cookie(
+                puzzle
+                    .client_puzzle_challenge_response
+                    .0
+                    .clone(),
+            )),
+            _ => None,
+        }
+    }
+}
+
 // ---
 
 impl TlsListElement for PSKKeyExchangeMode {
@@ -561,6 +666,7 @@ pub enum ClientExtension {
     CertificateCompressionAlgorithms(Vec<CertificateCompressionAlgorithm>),
     EncryptedClientHello(EncryptedClientHello),
     EncryptedClientHelloOuterExtensions(Vec<ExtensionType>),
+    ClientPuzzle(ClientPuzzleExtension),
     Unknown(UnknownExtension),
 }
 
@@ -588,6 +694,7 @@ impl ClientExtension {
             Self::EncryptedClientHelloOuterExtensions(_) => {
                 ExtensionType::EncryptedClientHelloOuterExtensions
             }
+            Self::ClientPuzzle(_) => ExtensionType::ClientPuzzleExtension,
             Self::Unknown(ref r) => r.typ,
         }
     }
@@ -620,6 +727,7 @@ impl Codec<'_> for ClientExtension {
             Self::CertificateCompressionAlgorithms(ref r) => r.encode(nested.buf),
             Self::EncryptedClientHello(ref r) => r.encode(nested.buf),
             Self::EncryptedClientHelloOuterExtensions(ref r) => r.encode(nested.buf),
+            Self::ClientPuzzle(ref r) => r.encode(nested.buf),
             Self::Unknown(ref r) => r.encode(nested.buf),
         }
     }
@@ -665,6 +773,9 @@ impl Codec<'_> for ClientExtension {
             }
             ExtensionType::EncryptedClientHelloOuterExtensions => {
                 Self::EncryptedClientHelloOuterExtensions(Vec::read(&mut sub)?)
+            }
+            ExtensionType::ClientPuzzleExtension => {
+                Self::ClientPuzzle(ClientPuzzleExtension::read(&mut sub)?)
             }
             _ => Self::Unknown(UnknownExtension::read(typ, &mut sub)),
         };
@@ -1115,6 +1226,16 @@ impl ClientHelloPayload {
             false
         }
     }
+
+    pub fn puzzle_solution(&self) -> Option<ClientPuzzleSolution> {
+        let ext = self.find_extension(ExtensionType::ClientPuzzleExtension)?;
+        match ext {
+            ClientExtension::ClientPuzzle(solution) => {
+                ClientPuzzleSolution::from_extension(solution)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1123,6 +1244,7 @@ pub(crate) enum HelloRetryExtension {
     Cookie(PayloadU16),
     SupportedVersions(ProtocolVersion),
     EchHelloRetryRequest(Vec<u8>),
+    ClientPuzzle(ClientPuzzleExtension),
     Unknown(UnknownExtension),
 }
 
@@ -1133,6 +1255,7 @@ impl HelloRetryExtension {
             Self::Cookie(_) => ExtensionType::Cookie,
             Self::SupportedVersions(_) => ExtensionType::SupportedVersions,
             Self::EchHelloRetryRequest(_) => ExtensionType::EncryptedClientHello,
+            Self::ClientPuzzle(_) => ExtensionType::ClientPuzzleExtension,
             Self::Unknown(ref r) => r.typ,
         }
     }
@@ -1150,6 +1273,7 @@ impl Codec<'_> for HelloRetryExtension {
             Self::EchHelloRetryRequest(ref r) => {
                 nested.buf.extend_from_slice(r);
             }
+            Self::ClientPuzzle(ref r) => r.encode(nested.buf),
             Self::Unknown(ref r) => r.encode(nested.buf),
         }
     }
@@ -1166,6 +1290,9 @@ impl Codec<'_> for HelloRetryExtension {
                 Self::SupportedVersions(ProtocolVersion::read(&mut sub)?)
             }
             ExtensionType::EncryptedClientHello => Self::EchHelloRetryRequest(sub.rest().to_vec()),
+            ExtensionType::ClientPuzzleExtension => {
+                Self::ClientPuzzle(ClientPuzzleExtension::read(&mut sub)?)
+            }
             _ => Self::Unknown(UnknownExtension::read(typ, &mut sub)),
         };
 
