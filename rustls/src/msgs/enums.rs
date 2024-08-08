@@ -118,6 +118,7 @@ enum_builder! {
         TransportParametersDraft => 0xffa5,
         EncryptedClientHello => 0xfe0d, // https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-18#section-11.1
         EncryptedClientHelloOuterExtensions => 0xfd00, // https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-18#section-5.1
+        ClientPuzzleExtension => 0xff00,
     }
 }
 
@@ -387,6 +388,17 @@ enum_builder! {
     }
 }
 
+enum_builder! {
+    /// The type of a client puzzle
+    ///
+    /// Specified as part of the client puzzles draft
+    /// TODO(XXX): Update reference once draft is available.alloc
+    @U16
+    pub enum ClientPuzzleType {
+        COOKIE => 0,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     // These tests are intended to provide coverage and
@@ -437,6 +449,7 @@ pub(crate) mod tests {
             CertificateStatusType::OCSP,
             CertificateStatusType::OCSP,
         );
+        test_enum16::<ClientPuzzleType>(ClientPuzzleType::COOKIE, ClientPuzzleType::COOKIE);
     }
 
     pub(crate) fn test_enum8<T: for<'a> Codec<'a>>(first: T, last: T) {
