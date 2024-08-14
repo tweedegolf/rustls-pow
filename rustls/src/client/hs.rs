@@ -28,9 +28,9 @@ use crate::log::{debug, trace};
 use crate::msgs::base::Payload;
 use crate::msgs::enums::{Compression, ECPointFormat, ExtensionType, PSKKeyExchangeMode};
 use crate::msgs::handshake::{
-    CertificateStatusRequest, ClientExtension, ClientHelloPayload, ClientSessionTicket,
-    ConvertProtocolNameList, HandshakeMessagePayload, HandshakePayload, HasServerExtensions,
-    HelloRetryRequest, KeyShareEntry, Random, SessionId,
+    CertificateStatusRequest, ClientExtension, ClientHelloPayload, ClientPuzzleExtension,
+    ClientSessionTicket, ConvertProtocolNameList, HandshakeMessagePayload, HandshakePayload,
+    HasServerExtensions, HelloRetryRequest, KeyShareEntry, Random, SessionId,
 };
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
@@ -344,6 +344,13 @@ fn emit_client_hello_for_retry(
         if let Some(prev_ech_ext) = input.prev_ech_ext.take() {
             exts.push(prev_ech_ext);
         }
+    }
+
+    if let Some(challenge) = retryreq.and_then(|r| r.puzzle_challenge()) {
+        let solution = challenge.solve();
+        exts.push(ClientExtension::ClientPuzzle(
+            ClientPuzzleExtension::from_solution(solution),
+        ));
     }
 
     // Do we have a SessionID or ticket cached for this host?
@@ -871,6 +878,7 @@ impl ExpectServerHelloOrHelloRetryRequest {
         cx.common.check_aligned_handshake()?;
 
         let cookie = hrr.cookie();
+        let challenge = hrr.puzzle_challenge();
         let req_group = hrr.requested_key_share_group();
 
         // We always send a key share when TLS 1.3 is enabled.
@@ -878,7 +886,7 @@ impl ExpectServerHelloOrHelloRetryRequest {
 
         // A retry request is illegal if it contains no cookie and asks for
         // retry of a group we already sent.
-        if cookie.is_none() && req_group == Some(offered_key_share.group()) {
+        if cookie.is_none() && challenge.is_none() && req_group == Some(offered_key_share.group()) {
             return Err({
                 cx.common.send_fatal_alert(
                     AlertDescription::IllegalParameter,
