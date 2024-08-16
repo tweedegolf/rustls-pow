@@ -529,100 +529,104 @@ impl TlsListElement for ClientPuzzleType {
 }
 
 #[derive(Clone, Debug)]
-pub struct ClientPuzzleExtension {
-    puzzle_type: Vec<ClientPuzzleType>,
-    client_puzzle_challenge_response: PayloadU16,
+pub enum ClientPuzzle {
+    SupportIndication(Vec<ClientPuzzleType>),
+    Cookie(PayloadU16),
+    Unknown(ClientPuzzleType, PayloadU16),
 }
 
-impl Codec<'_> for ClientPuzzleExtension {
+impl Codec<'_> for ClientPuzzle {
     fn encode(&self, bytes: &mut Vec<u8>) {
-        self.puzzle_type.encode(bytes);
-        self.client_puzzle_challenge_response
-            .encode(bytes);
-    }
-
-    fn read(r: &mut Reader<'_>) -> Result<Self, InvalidMessage> {
-        Ok(Self {
-            puzzle_type: Vec::read(r)?,
-            client_puzzle_challenge_response: PayloadU16::read(r)?,
-        })
-    }
-}
-
-impl ClientPuzzleExtension {
-    pub fn from_challenge(challenge: ClientPuzzleChallenge) -> Self {
-        match challenge {
-            ClientPuzzleChallenge::Cookie(challenge) => Self {
-                puzzle_type: vec![ClientPuzzleType::COOKIE],
-                client_puzzle_challenge_response: PayloadU16::new(challenge),
-            },
+        match self {
+            ClientPuzzle::SupportIndication(supported) => {
+                supported.encode(bytes);
+                PayloadU16::empty().encode(bytes);
+            }
+            ClientPuzzle::Cookie(cookie) => {
+                vec![ClientPuzzleType::COOKIE].encode(bytes);
+                cookie.encode(bytes);
+            }
+            ClientPuzzle::Unknown(puzzletype, data) => {
+                vec![*puzzletype].encode(bytes);
+                data.encode(bytes);
+            }
         }
     }
 
-    pub fn from_solution(solution: ClientPuzzleSolution) -> Self {
-        match solution {
-            ClientPuzzleSolution::Cookie(solution) => Self {
-                puzzle_type: vec![ClientPuzzleType::COOKIE],
-                client_puzzle_challenge_response: PayloadU16::new(solution),
-            },
+    fn read(r: &mut Reader<'_>) -> Result<Self, InvalidMessage> {
+        let puzzletype = Vec::<ClientPuzzleType>::read(r)?;
+        let len = u16::read(r)? as usize;
+        let mut sub = r.sub(len)?;
+
+        match (&puzzletype[..], len) {
+            ([], _) => Err(InvalidMessage::InvalidClientPuzzle),
+            (_, 0) => Ok(Self::SupportIndication(puzzletype)),
+            ([ClientPuzzleType::COOKIE], _) => Ok(Self::Cookie(PayloadU16(sub.rest().into()))),
+            ([unknown], _) => Ok(Self::Unknown(*unknown, PayloadU16(sub.rest().into()))),
+            _ => Err(InvalidMessage::InvalidClientPuzzle),
+        }
+    }
+}
+
+impl ClientPuzzle {
+    pub fn support_indicator() -> Self {
+        Self::SupportIndication(vec![ClientPuzzleType::COOKIE])
+    }
+
+    pub fn check(&self, challenge: &ClientPuzzleChallenge) -> bool {
+        match (self, challenge) {
+            (Self::Cookie(actual), ClientPuzzleChallenge::Cookie(expected)) => actual == expected,
+            _ => false,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum ClientPuzzleChallenge {
-    Cookie(Vec<u8>),
+    Cookie(PayloadU16),
+    Unknown(ClientPuzzleType, PayloadU16),
 }
 
-#[derive(Debug, Clone)]
-pub enum ClientPuzzleSolution {
-    Cookie(Vec<u8>),
+impl Codec<'_> for ClientPuzzleChallenge {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::Cookie(cookie) => {
+                vec![ClientPuzzleType::COOKIE].encode(bytes);
+                cookie.encode(bytes);
+            }
+            Self::Unknown(puzzletype, data) => {
+                vec![*puzzletype].encode(bytes);
+                data.encode(bytes);
+            }
+        }
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, InvalidMessage> {
+        let puzzletype = Vec::<ClientPuzzleType>::read(r)?;
+        let len = u16::read(r)? as usize;
+        let mut sub = r.sub(len)?;
+
+        match &puzzletype[..] {
+            [ClientPuzzleType::COOKIE] => Ok(Self::Cookie(PayloadU16(sub.rest().into()))),
+            [unknown] => Ok(Self::Unknown(*unknown, PayloadU16(sub.rest().into()))),
+            _ => Err(InvalidMessage::InvalidClientPuzzle),
+        }
+    }
 }
 
 impl ClientPuzzleChallenge {
     pub fn new_cookie(secure_random: &dyn SecureRandom) -> Result<Self, Error> {
         let mut challenge = vec![0; 16];
         secure_random.fill(&mut challenge)?;
-        Ok(Self::Cookie(challenge))
+        Ok(Self::Cookie(PayloadU16(challenge)))
     }
 
-    pub fn from_extension(puzzle: &ClientPuzzleExtension) -> Option<Self> {
-        match &puzzle.puzzle_type[..] {
-            [ClientPuzzleType::COOKIE] => Some(Self::Cookie(
-                puzzle
-                    .client_puzzle_challenge_response
-                    .0
-                    .clone(),
-            )),
-            _ => None,
-        }
-    }
-
-    pub fn solve(self) -> ClientPuzzleSolution {
+    pub fn solve(&self) -> Option<ClientPuzzle> {
         match self {
-            Self::Cookie(challenge) => ClientPuzzleSolution::Cookie(challenge),
-        }
-    }
-
-    pub fn check(&self, solution: &ClientPuzzleSolution) -> bool {
-        match (self, solution) {
-            (Self::Cookie(challenge), ClientPuzzleSolution::Cookie(response)) => {
-                challenge == response
+            ClientPuzzleChallenge::Cookie(challenge) => {
+                Some(ClientPuzzle::Cookie(challenge.clone()))
             }
-        }
-    }
-}
-
-impl ClientPuzzleSolution {
-    pub fn from_extension(puzzle: &ClientPuzzleExtension) -> Option<Self> {
-        match &puzzle.puzzle_type[..] {
-            [ClientPuzzleType::COOKIE] => Some(Self::Cookie(
-                puzzle
-                    .client_puzzle_challenge_response
-                    .0
-                    .clone(),
-            )),
-            _ => None,
+            ClientPuzzleChallenge::Unknown(_, _) => None,
         }
     }
 }
@@ -666,7 +670,7 @@ pub enum ClientExtension {
     CertificateCompressionAlgorithms(Vec<CertificateCompressionAlgorithm>),
     EncryptedClientHello(EncryptedClientHello),
     EncryptedClientHelloOuterExtensions(Vec<ExtensionType>),
-    ClientPuzzle(ClientPuzzleExtension),
+    ClientPuzzle(ClientPuzzle),
     Unknown(UnknownExtension),
 }
 
@@ -775,7 +779,7 @@ impl Codec<'_> for ClientExtension {
                 Self::EncryptedClientHelloOuterExtensions(Vec::read(&mut sub)?)
             }
             ExtensionType::ClientPuzzleExtension => {
-                Self::ClientPuzzle(ClientPuzzleExtension::read(&mut sub)?)
+                Self::ClientPuzzle(ClientPuzzle::read(&mut sub)?)
             }
             _ => Self::Unknown(UnknownExtension::read(typ, &mut sub)),
         };
@@ -1227,12 +1231,22 @@ impl ClientHelloPayload {
         }
     }
 
-    pub fn puzzle_solution(&self) -> Option<ClientPuzzleSolution> {
+    pub fn supported_puzzles(&self) -> Vec<ClientPuzzleType> {
+        let ext = self.find_extension(ExtensionType::ClientPuzzleExtension);
+
+        match ext {
+            Some(ClientExtension::ClientPuzzle(ClientPuzzle::SupportIndication(supported))) => {
+                supported.clone()
+            }
+            _ => vec![],
+        }
+    }
+
+    pub fn puzzle_solution(&self) -> Option<&ClientPuzzle> {
         let ext = self.find_extension(ExtensionType::ClientPuzzleExtension)?;
         match ext {
-            ClientExtension::ClientPuzzle(solution) => {
-                ClientPuzzleSolution::from_extension(solution)
-            }
+            ClientExtension::ClientPuzzle(ClientPuzzle::SupportIndication(_)) => None,
+            ClientExtension::ClientPuzzle(solution) => Some(solution),
             _ => None,
         }
     }
@@ -1244,7 +1258,7 @@ pub(crate) enum HelloRetryExtension {
     Cookie(PayloadU16),
     SupportedVersions(ProtocolVersion),
     EchHelloRetryRequest(Vec<u8>),
-    ClientPuzzle(ClientPuzzleExtension),
+    ClientPuzzle(ClientPuzzleChallenge),
     Unknown(UnknownExtension),
 }
 
@@ -1291,7 +1305,7 @@ impl Codec<'_> for HelloRetryExtension {
             }
             ExtensionType::EncryptedClientHello => Self::EchHelloRetryRequest(sub.rest().to_vec()),
             ExtensionType::ClientPuzzleExtension => {
-                Self::ClientPuzzle(ClientPuzzleExtension::read(&mut sub)?)
+                Self::ClientPuzzle(ClientPuzzleChallenge::read(&mut sub)?)
             }
             _ => Self::Unknown(UnknownExtension::read(typ, &mut sub)),
         };
@@ -1395,12 +1409,10 @@ impl HelloRetryRequest {
         }
     }
 
-    pub(crate) fn puzzle_challenge(&self) -> Option<ClientPuzzleChallenge> {
+    pub(crate) fn puzzle_challenge(&self) -> Option<&ClientPuzzleChallenge> {
         let ext = self.find_extension(ExtensionType::ClientPuzzleExtension)?;
         match *ext {
-            HelloRetryExtension::ClientPuzzle(ref challenge) => {
-                ClientPuzzleChallenge::from_extension(challenge)
-            }
+            HelloRetryExtension::ClientPuzzle(ref challenge) => Some(challenge),
             _ => None,
         }
     }

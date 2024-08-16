@@ -161,6 +161,8 @@ pub enum InvalidMessage {
     InvalidKeyUpdate,
     /// A peer's server name could not be decoded
     InvalidServerName,
+    /// A peer's puzzle extension could not be decoded
+    InvalidClientPuzzle,
     /// A TLS message payload was larger then allowed by the specification.
     MessageTooLarge,
     /// Message is shorter than the expected length
@@ -227,6 +229,7 @@ pub enum PeerMisbehaved {
     IllegalHelloRetryRequestWithUnsupportedVersion,
     IllegalHelloRetryRequestWithWrongSessionId,
     IllegalHelloRetryRequestWithInvalidEch,
+    IllegalHelloRetryRequestWithUnsolvablePuzzle,
     IllegalMiddleboxChangeCipherSpec,
     IllegalTlsInnerPlaintext,
     IncorrectBinder,
@@ -307,6 +310,7 @@ pub enum PeerIncompatible {
     NoEcPointFormatsInCommon,
     NoKxGroupsInCommon,
     NoSignatureSchemesInCommon,
+    NoPuzzleInCommon,
     NullCompressionRequired,
     ServerDoesNotSupportTls12Or13,
     ServerSentHelloRetryRequestWithUnknownExtension,

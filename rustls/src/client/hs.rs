@@ -28,7 +28,7 @@ use crate::log::{debug, trace};
 use crate::msgs::base::Payload;
 use crate::msgs::enums::{Compression, ECPointFormat, ExtensionType, PSKKeyExchangeMode};
 use crate::msgs::handshake::{
-    CertificateStatusRequest, ClientExtension, ClientHelloPayload, ClientPuzzleExtension,
+    CertificateStatusRequest, ClientExtension, ClientHelloPayload, ClientPuzzle,
     ClientSessionTicket, ConvertProtocolNameList, HandshakeMessagePayload, HandshakePayload,
     HasServerExtensions, HelloRetryRequest, KeyShareEntry, Random, SessionId,
 };
@@ -347,9 +347,16 @@ fn emit_client_hello_for_retry(
     }
 
     if let Some(challenge) = retryreq.and_then(|r| r.puzzle_challenge()) {
-        let solution = challenge.solve();
+        let Some(solution) = challenge.solve() else {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::IllegalParameter,
+                PeerMisbehaved::IllegalHelloRetryRequestWithUnsolvablePuzzle,
+            ));
+        };
+        exts.push(ClientExtension::ClientPuzzle(solution));
+    } else {
         exts.push(ClientExtension::ClientPuzzle(
-            ClientPuzzleExtension::from_solution(solution),
+            ClientPuzzle::support_indicator(),
         ));
     }
 
