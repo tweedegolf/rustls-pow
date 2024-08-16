@@ -43,8 +43,8 @@ mod client_hello {
     use crate::msgs::enums::{Compression, NamedGroup, PSKKeyExchangeMode};
     use crate::msgs::handshake::{
         CertReqExtension, CertificatePayloadTls13, CertificateRequestPayloadTls13,
-        ClientHelloPayload, ClientPuzzleChallenge, ClientPuzzleExtension, HelloRetryExtension,
-        HelloRetryRequest, KeyShareEntry, Random, ServerExtension, ServerHelloPayload, SessionId,
+        ClientHelloPayload, ClientPuzzleChallenge, HelloRetryExtension, HelloRetryRequest,
+        KeyShareEntry, Random, ServerExtension, ServerHelloPayload, SessionId,
     };
     use crate::server::common::ActiveCertifiedKey;
     use crate::sign;
@@ -200,7 +200,7 @@ mod client_hello {
             let chosen_share_and_kxg = if let (Some(challenge), Some(solution)) =
                 (&self.challenge, client_hello.puzzle_solution())
             {
-                if challenge.check(&solution) {
+                if solution.check(challenge) {
                     chosen_share_and_kxg
                 } else {
                     None
@@ -220,6 +220,16 @@ mod client_hello {
                         return Err(cx.common.send_fatal_alert(
                             AlertDescription::IllegalParameter,
                             PeerMisbehaved::RefusedToFollowHelloRetryRequest,
+                        ));
+                    }
+
+                    if !client_hello
+                        .supported_puzzles()
+                        .contains(&crate::msgs::enums::ClientPuzzleType::COOKIE)
+                    {
+                        return Err(cx.common.send_fatal_alert(
+                            AlertDescription::HandshakeFailure,
+                            PeerIncompatible::NoPuzzleInCommon,
                         ));
                     }
 
@@ -618,9 +628,7 @@ mod client_hello {
             ));
         if let Some(challenge) = challenge {
             req.extensions
-                .push(HelloRetryExtension::ClientPuzzle(
-                    ClientPuzzleExtension::from_challenge(challenge),
-                ));
+                .push(HelloRetryExtension::ClientPuzzle(challenge));
         }
 
         let m = Message {
