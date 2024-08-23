@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use core::fmt::Debug;
 
 pub use crate::msgs::enums::HashAlgorithm;
 
@@ -6,7 +7,7 @@ pub use crate::msgs::enums::HashAlgorithm;
 ///
 /// This interface can do both one-shot and incremental hashing, using
 /// [`Hash::hash()`] and [`Hash::start()`] respectively.
-pub trait Hash: Send + Sync {
+pub trait Hash: Send + Sync + Debug {
     /// Start an incremental hash computation.
     fn start(&self) -> Box<dyn Context>;
 

@@ -35,6 +35,7 @@ pub fn default_provider() -> CryptoProvider {
         kx_groups: ALL_KX_GROUPS.to_vec(),
         signature_verification_algorithms: SUPPORTED_SIG_ALGS,
         secure_random: &Ring,
+        sha256_hasher: &hash::SHA256,
         key_provider: &Ring,
     }
 }

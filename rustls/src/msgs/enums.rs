@@ -396,6 +396,7 @@ enum_builder! {
     @U16
     pub enum ClientPuzzleType {
         COOKIE => 0,
+        SHA256 => 1,
     }
 }
 
