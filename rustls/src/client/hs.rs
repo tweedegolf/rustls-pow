@@ -347,14 +347,23 @@ fn emit_client_hello_for_retry(
     }
 
     if let Some(challenge) = retryreq.and_then(|r| r.puzzle_challenge()) {
-        let solution = challenge.solve().ok_or_else(|| {
-            cx.common.send_fatal_alert(
-                AlertDescription::IllegalParameter,
+        if config.client_puzzle_timeout != 0 {
+            let solution = challenge
+                .solve(config.client_puzzle_timeout, &config.provider)
+                .ok_or_else(|| {
+                    cx.common.send_fatal_alert(
+                        AlertDescription::IllegalParameter,
+                        PeerMisbehaved::IllegalHelloRetryRequestWithUnsolvablePuzzle,
+                    )
+                })?;
+            exts.push(ClientExtension::ClientPuzzle(solution));
+        } else {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::UnsupportedExtension,
                 PeerMisbehaved::IllegalHelloRetryRequestWithUnsolvablePuzzle,
-            )
-        })?;
-        exts.push(ClientExtension::ClientPuzzle(solution));
-    } else {
+            ));
+        }
+    } else if support_tls13 && config.client_puzzle_timeout != 0 {
         exts.push(ClientExtension::ClientPuzzle(
             ClientPuzzle::support_indicator(),
         ));

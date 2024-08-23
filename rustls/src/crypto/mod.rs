@@ -10,6 +10,7 @@ use once_cell::sync::OnceCell;
 use pki_types::PrivateKeyDer;
 use zeroize::Zeroize;
 
+use crate::crypto::hash::Hash;
 use crate::sign::SigningKey;
 pub use crate::webpki::{
     verify_tls12_signature, verify_tls13_signature, WebPkiSupportedAlgorithms,
@@ -209,6 +210,9 @@ pub struct CryptoProvider {
     /// Source of cryptographically secure random numbers.
     pub secure_random: &'static dyn SecureRandom,
 
+    /// Sha256 hasher
+    pub sha256_hasher: &'static dyn Hash,
+
     /// Provider for loading private [SigningKey]s from [PrivateKeyDer].
     pub key_provider: &'static dyn KeyProvider,
 }
@@ -295,6 +299,7 @@ impl CryptoProvider {
             signature_verification_algorithms,
             secure_random,
             key_provider,
+            ..
         } = self;
         cipher_suites.iter().all(|cs| cs.fips())
             && kx_groups.iter().all(|kx| kx.fips())

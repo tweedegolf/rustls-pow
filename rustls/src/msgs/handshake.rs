@@ -3,6 +3,7 @@ use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::mem::size_of;
 use core::ops::Deref;
 use core::{fmt, iter};
 
@@ -10,7 +11,7 @@ use pki_types::{CertificateDer, DnsName};
 
 #[cfg(feature = "tls12")]
 use crate::crypto::ActiveKeyExchange;
-use crate::crypto::SecureRandom;
+use crate::crypto::{CryptoProvider, SecureRandom};
 use crate::enums::{
     CertificateCompressionAlgorithm, CipherSuite, EchClientHelloType, HandshakeType,
     ProtocolVersion, SignatureScheme,
@@ -27,6 +28,7 @@ use crate::msgs::enums::{
     ECPointFormat, EchVersion, ExtensionType, HpkeAead, HpkeKdf, HpkeKem, KeyUpdateRequest,
     NamedGroup, PSKKeyExchangeMode, ServerNameType,
 };
+use crate::server::PuzzleConfig;
 use crate::verify::DigitallySignedStruct;
 use crate::x509::wrap_in_sequence;
 use crate::{rand, Error};
@@ -532,6 +534,7 @@ impl TlsListElement for ClientPuzzleType {
 pub enum ClientPuzzle {
     SupportIndication(Vec<ClientPuzzleType>),
     Cookie(PayloadU16),
+    Sha256(PayloadU16),
     Unknown(ClientPuzzleType, PayloadU16),
 }
 
@@ -545,6 +548,10 @@ impl Codec<'_> for ClientPuzzle {
             Self::Cookie(cookie) => {
                 vec![ClientPuzzleType::COOKIE].encode(bytes);
                 cookie.encode(bytes);
+            }
+            Self::Sha256(solution) => {
+                vec![ClientPuzzleType::SHA256].encode(bytes);
+                solution.encode(bytes);
             }
             Self::Unknown(puzzletype, data) => {
                 vec![*puzzletype].encode(bytes);
@@ -562,6 +569,7 @@ impl Codec<'_> for ClientPuzzle {
             ([], _) => Err(InvalidMessage::InvalidClientPuzzle),
             (_, 0) => Ok(Self::SupportIndication(puzzletype)),
             ([ClientPuzzleType::COOKIE], _) => Ok(Self::Cookie(PayloadU16(sub.rest().into()))),
+            ([ClientPuzzleType::SHA256], _) => Ok(Self::Sha256(PayloadU16(sub.rest().into()))),
             ([unknown], _) => Ok(Self::Unknown(*unknown, PayloadU16(sub.rest().into()))),
             _ => Err(InvalidMessage::InvalidClientPuzzle),
         }
@@ -570,12 +578,28 @@ impl Codec<'_> for ClientPuzzle {
 
 impl ClientPuzzle {
     pub fn support_indicator() -> Self {
-        Self::SupportIndication(vec![ClientPuzzleType::COOKIE])
+        Self::SupportIndication(vec![ClientPuzzleType::COOKIE, ClientPuzzleType::SHA256])
     }
 
-    pub fn check(&self, challenge: &ClientPuzzleChallenge) -> bool {
+    pub fn check(&self, challenge: &ClientPuzzleChallenge, provider: &CryptoProvider) -> bool {
         match (self, challenge) {
             (Self::Cookie(actual), ClientPuzzleChallenge::Cookie(expected)) => actual == expected,
+            (Self::Sha256(solution), ClientPuzzleChallenge::Sha256(difficulty, challenge)) => {
+                const TAIL: &[u8] = b"TLS SHA256CPUPuzzle\0";
+                let mut buf = vec![0; challenge.0.len() + size_of::<u64>() + TAIL.len()];
+                buf[0..challenge.0.len()].copy_from_slice(&challenge.0);
+                buf[challenge.0.len()..][..solution.0.len()].copy_from_slice(&solution.0);
+                buf[challenge.0.len() + solution.0.len()..].copy_from_slice(TAIL);
+                let full = difficulty / 8;
+                let partial = difficulty % 8;
+                let hash = provider.sha256_hasher.hash(&buf);
+                let hashbytes: &[u8] = hash.as_ref();
+                hashbytes
+                    .iter()
+                    .take(full as _)
+                    .all(|v| *v == 0)
+                    && hashbytes[full as usize].leading_zeros() >= partial as _
+            }
             _ => false,
         }
     }
@@ -584,6 +608,7 @@ impl ClientPuzzle {
 #[derive(Debug, Clone)]
 pub enum ClientPuzzleChallenge {
     Cookie(PayloadU16),
+    Sha256(u8, PayloadU16),
     Unknown(ClientPuzzleType, PayloadU16),
 }
 
@@ -593,6 +618,12 @@ impl Codec<'_> for ClientPuzzleChallenge {
             Self::Cookie(cookie) => {
                 vec![ClientPuzzleType::COOKIE].encode(bytes);
                 cookie.encode(bytes);
+            }
+            Self::Sha256(difficulty, challenge) => {
+                vec![ClientPuzzleType::SHA256].encode(bytes);
+                let nested = LengthPrefixedBuffer::new(ListLength::U16, bytes);
+                difficulty.encode(nested.buf);
+                challenge.encode(nested.buf);
             }
             Self::Unknown(puzzletype, data) => {
                 vec![*puzzletype].encode(bytes);
@@ -608,6 +639,12 @@ impl Codec<'_> for ClientPuzzleChallenge {
 
         match &puzzletype[..] {
             [ClientPuzzleType::COOKIE] => Ok(Self::Cookie(PayloadU16(sub.rest().into()))),
+            [ClientPuzzleType::SHA256] => {
+                let difficulty = u8::read(&mut sub)?;
+                let challenge = PayloadU16::read(&mut sub)?;
+                sub.expect_empty("puzzle")?;
+                Ok(Self::Sha256(difficulty, challenge))
+            }
             [unknown] => Ok(Self::Unknown(*unknown, PayloadU16(sub.rest().into()))),
             _ => Err(InvalidMessage::InvalidClientPuzzle),
         }
@@ -615,16 +652,62 @@ impl Codec<'_> for ClientPuzzleChallenge {
 }
 
 impl ClientPuzzleChallenge {
-    pub fn new_cookie(secure_random: &dyn SecureRandom) -> Result<Self, Error> {
+    pub fn new(config: PuzzleConfig, secure_random: &dyn SecureRandom) -> Result<Self, Error> {
+        match config {
+            PuzzleConfig::Sha256 { difficulty } => Self::new_sha(difficulty, secure_random),
+            PuzzleConfig::Cookie => Self::new_cookie(secure_random),
+        }
+    }
+
+    fn new_cookie(secure_random: &dyn SecureRandom) -> Result<Self, Error> {
         let mut challenge = vec![0; 16];
         secure_random.fill(&mut challenge)?;
         Ok(Self::Cookie(PayloadU16(challenge)))
     }
 
-    pub fn solve(&self) -> Option<ClientPuzzle> {
+    fn new_sha(difficulty: u8, secure_random: &dyn SecureRandom) -> Result<Self, Error> {
+        let mut challenge = vec![0; 16];
+        secure_random.fill(&mut challenge)?;
+        Ok(Self::Sha256(difficulty, PayloadU16::new(challenge)))
+    }
+
+    pub fn solve(&self, timeout: u64, provider: &CryptoProvider) -> Option<ClientPuzzle> {
         match self {
-            Self::Cookie(challenge) => {
-                Some(ClientPuzzle::Cookie(challenge.clone()))
+            Self::Cookie(challenge) => Some(ClientPuzzle::Cookie(challenge.clone())),
+            Self::Sha256(difficulty, challenge) => {
+                #[cfg(feature = "std")]
+                let start = std::time::Instant::now();
+                const TAIL: &[u8] = b"TLS SHA256CPUPuzzle\0";
+                let mut buf = vec![0; challenge.0.len() + size_of::<u64>() + TAIL.len()];
+                buf[0..challenge.0.len()].copy_from_slice(&challenge.0);
+                buf[challenge.0.len() + size_of::<u64>()..].copy_from_slice(TAIL);
+                let full = difficulty / 8;
+                let partial = difficulty % 8;
+                for sol in 0..u64::MAX {
+                    #[cfg(feature = "std")]
+                    if sol % 256 == 0
+                        && std::time::Instant::now().duration_since(start)
+                            > core::time::Duration::from_millis(timeout)
+                    {
+                        return None;
+                    }
+                    buf[challenge.0.len()..][..size_of::<u64>()]
+                        .copy_from_slice(&sol.to_ne_bytes());
+
+                    let hash = provider.sha256_hasher.hash(&buf);
+                    let hashbytes: &[u8] = hash.as_ref();
+                    if hashbytes
+                        .iter()
+                        .take(full as _)
+                        .all(|v| *v == 0)
+                        && hashbytes[full as usize].leading_zeros() >= partial as _
+                    {
+                        return Some(ClientPuzzle::Sha256(PayloadU16::new(
+                            sol.to_ne_bytes().into(),
+                        )));
+                    }
+                }
+                None
             }
             Self::Unknown(_, _) => None,
         }

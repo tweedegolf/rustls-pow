@@ -6,6 +6,7 @@ extern crate std;
 
 use alloc::sync::Arc;
 
+use hash::Sha256;
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::PrivateKeyDer;
 
@@ -25,6 +26,7 @@ pub fn provider() -> CryptoProvider {
         signature_verification_algorithms: verify::ALGORITHMS,
         secure_random: &Provider,
         key_provider: &Provider,
+        sha256_hasher: &Sha256,
     }
 }
 

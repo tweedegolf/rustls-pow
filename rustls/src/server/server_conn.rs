@@ -24,6 +24,7 @@ use crate::error::Error;
 #[cfg(feature = "logging")]
 use crate::log::trace;
 use crate::msgs::base::Payload;
+use crate::msgs::enums::ClientPuzzleType;
 use crate::msgs::handshake::{ClientHelloPayload, ProtocolName, ServerExtension};
 use crate::msgs::message::Message;
 #[cfg(feature = "std")]
@@ -371,6 +372,32 @@ pub struct ServerConfig {
     ///
     /// [RFC8779]: https://datatracker.ietf.org/doc/rfc8879/
     pub cert_decompressors: Vec<&'static dyn compress::CertDecompressor>,
+
+    /// Puzzles to challenge the client with.
+    ///
+    /// If this is empty, no client puzzle will be sent.
+    pub client_puzzles: Vec<PuzzleConfig>,
+}
+
+/// Configuration for a single supported puzzle type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PuzzleConfig {
+    /// A Sha256 based puzzle.
+    Sha256 {
+        /// Difficulty of the puzzle, incrementing by 1 doubles the amount of effort needed to solve.
+        difficulty: u8,
+    },
+    /// A simple echo puzzle, usefull for testing.
+    Cookie,
+}
+
+impl PuzzleConfig {
+    pub(super) fn puzzle_type(&self) -> ClientPuzzleType {
+        match self {
+            Self::Sha256 { .. } => ClientPuzzleType::SHA256,
+            Self::Cookie => ClientPuzzleType::COOKIE,
+        }
+    }
 }
 
 impl ServerConfig {

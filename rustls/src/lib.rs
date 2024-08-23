@@ -598,7 +598,7 @@ pub mod server {
     #[cfg(any(feature = "std", feature = "hashbrown"))]
     pub use handy::ServerSessionMemoryCache;
     pub use server_conn::{
-        Accepted, ClientHello, ProducesTickets, ResolvesServerCert, ServerConfig,
+        Accepted, ClientHello, ProducesTickets, PuzzleConfig, ResolvesServerCert, ServerConfig,
         ServerConnectionData, StoresServerSessions, UnbufferedServerConnection,
     };
     #[cfg(feature = "std")]
