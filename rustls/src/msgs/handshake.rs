@@ -538,15 +538,15 @@ pub enum ClientPuzzle {
 impl Codec<'_> for ClientPuzzle {
     fn encode(&self, bytes: &mut Vec<u8>) {
         match self {
-            ClientPuzzle::SupportIndication(supported) => {
+            Self::SupportIndication(supported) => {
                 supported.encode(bytes);
                 PayloadU16::empty().encode(bytes);
             }
-            ClientPuzzle::Cookie(cookie) => {
+            Self::Cookie(cookie) => {
                 vec![ClientPuzzleType::COOKIE].encode(bytes);
                 cookie.encode(bytes);
             }
-            ClientPuzzle::Unknown(puzzletype, data) => {
+            Self::Unknown(puzzletype, data) => {
                 vec![*puzzletype].encode(bytes);
                 data.encode(bytes);
             }
@@ -623,10 +623,10 @@ impl ClientPuzzleChallenge {
 
     pub fn solve(&self) -> Option<ClientPuzzle> {
         match self {
-            ClientPuzzleChallenge::Cookie(challenge) => {
+            Self::Cookie(challenge) => {
                 Some(ClientPuzzle::Cookie(challenge.clone()))
             }
-            ClientPuzzleChallenge::Unknown(_, _) => None,
+            Self::Unknown(_, _) => None,
         }
     }
 }
