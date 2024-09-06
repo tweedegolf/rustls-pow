@@ -347,12 +347,12 @@ fn emit_client_hello_for_retry(
     }
 
     if let Some(challenge) = retryreq.and_then(|r| r.puzzle_challenge()) {
-        let Some(solution) = challenge.solve() else {
-            return Err(cx.common.send_fatal_alert(
+        let solution = challenge.solve().ok_or_else(|| {
+            cx.common.send_fatal_alert(
                 AlertDescription::IllegalParameter,
                 PeerMisbehaved::IllegalHelloRetryRequestWithUnsolvablePuzzle,
-            ));
-        };
+            )
+        })?;
         exts.push(ClientExtension::ClientPuzzle(solution));
     } else {
         exts.push(ClientExtension::ClientPuzzle(
