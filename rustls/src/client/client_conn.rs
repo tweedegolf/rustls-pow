@@ -258,6 +258,13 @@ pub struct ClientConfig {
 
     /// How to offer Encrypted Client Hello (ECH). The default is to not offer ECH.
     pub(super) ech_mode: Option<EchMode>,
+
+    /// Timeout (in milliseconds) used to limit time spent solving a client puzzle.
+    ///
+    /// A value of 0 indicates support for client puzzles is disabled (the default)
+    ///
+    /// Note that in a no_std environment, this timeout is not enforced!
+    pub client_puzzle_timeout: u64,
 }
 
 impl ClientConfig {

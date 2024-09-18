@@ -3,6 +3,7 @@ use alloc::boxed::Box;
 use rustls::crypto::hash;
 use sha2::Digest;
 
+#[derive(Debug)]
 pub struct Sha256;
 
 impl hash::Hash for Sha256 {

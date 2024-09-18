@@ -44,6 +44,7 @@ pub fn default_provider() -> CryptoProvider {
         kx_groups: default_kx_groups(),
         signature_verification_algorithms: SUPPORTED_SIG_ALGS,
         secure_random: &AwsLcRs,
+        sha256_hasher: &hash::SHA256,
         key_provider: &AwsLcRs,
     }
 }
