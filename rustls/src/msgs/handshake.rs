@@ -586,9 +586,9 @@ impl ClientPuzzle {
             (Self::Cookie(actual), ClientPuzzleChallenge::Cookie(expected)) => actual == expected,
             (Self::Sha256(solution), ClientPuzzleChallenge::Sha256(difficulty, challenge)) => {
                 const TAIL: &[u8] = b"TLS SHA256CPUPuzzle\0";
-                let mut buf = vec![0; challenge.0.len() + size_of::<u64>() + TAIL.len()];
-                buf[0..challenge.0.len()].copy_from_slice(&challenge.0);
-                buf[challenge.0.len()..][..solution.0.len()].copy_from_slice(&solution.0);
+                let mut buf = vec![0; challenge.0.len() + solution.0.len() + TAIL.len()];
+                buf[..solution.0.len()].copy_from_slice(&solution.0);
+                buf[solution.0.len()..][..challenge.0.len()].copy_from_slice(&challenge.0);
                 buf[challenge.0.len() + solution.0.len()..].copy_from_slice(TAIL);
                 let full = difficulty / 8;
                 let partial = difficulty % 8;
@@ -679,7 +679,7 @@ impl ClientPuzzleChallenge {
                 let start = std::time::Instant::now();
                 const TAIL: &[u8] = b"TLS SHA256CPUPuzzle\0";
                 let mut buf = vec![0; challenge.0.len() + size_of::<u64>() + TAIL.len()];
-                buf[0..challenge.0.len()].copy_from_slice(&challenge.0);
+                buf[size_of::<u64>()..][..challenge.0.len()].copy_from_slice(&challenge.0);
                 buf[challenge.0.len() + size_of::<u64>()..].copy_from_slice(TAIL);
                 let full = difficulty / 8;
                 let partial = difficulty % 8;
@@ -691,7 +691,7 @@ impl ClientPuzzleChallenge {
                     {
                         return None;
                     }
-                    buf[challenge.0.len()..][..size_of::<u64>()]
+                    buf[..size_of::<u64>()]
                         .copy_from_slice(&sol.to_ne_bytes());
 
                     let hash = provider.sha256_hasher.hash(&buf);
