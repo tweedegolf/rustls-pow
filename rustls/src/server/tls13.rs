@@ -196,17 +196,21 @@ mod client_hello {
                 (share.group == selected_kxg.name()).then_some((share, selected_kxg))
             });
 
-            // Force hrr if the client hasn't solved a required puzzle yet
-            let chosen_share_and_kxg = if let (Some(challenge), Some(solution)) =
-                (&self.challenge, client_hello.puzzle_solution())
-            {
-                if solution.check(challenge) {
-                    chosen_share_and_kxg
+            // Force retry if the client hasn't solved a puzzle yet and we require that:
+            let chosen_share_and_kxg = if !self.config.client_puzzles.is_empty() {
+                if let (Some(challenge), Some(solution)) =
+                    (&self.challenge, client_hello.puzzle_solution())
+                {
+                    if solution.check(challenge, &self.config.provider) {
+                        chosen_share_and_kxg
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
             } else {
-                None
+                chosen_share_and_kxg
             };
 
             let chosen_share_and_kxg = match chosen_share_and_kxg {
@@ -223,18 +227,26 @@ mod client_hello {
                         ));
                     }
 
-                    if !client_hello
-                        .supported_puzzles()
-                        .contains(&crate::msgs::enums::ClientPuzzleType::COOKIE)
-                    {
+                    let mut challenge = None;
+
+                    for puzzle in &self.config.client_puzzles {
+                        if client_hello
+                            .supported_puzzles()
+                            .contains(&puzzle.puzzle_type())
+                        {
+                            challenge = Some(ClientPuzzleChallenge::new(
+                                *puzzle,
+                                self.config.provider.secure_random,
+                            )?);
+                        }
+                    }
+
+                    if challenge.is_none() && !self.config.client_puzzles.is_empty() {
                         return Err(cx.common.send_fatal_alert(
                             AlertDescription::HandshakeFailure,
                             PeerIncompatible::NoPuzzleInCommon,
                         ));
                     }
-
-                    let challenge =
-                        ClientPuzzleChallenge::new_cookie(self.config.provider.secure_random)?;
 
                     emit_hello_retry_request(
                         &mut self.transcript,
@@ -242,7 +254,7 @@ mod client_hello {
                         client_hello.session_id,
                         cx.common,
                         selected_kxg.name(),
-                        Some(challenge.clone()),
+                        challenge.clone(),
                     );
                     emit_fake_ccs(cx.common);
 
@@ -256,7 +268,7 @@ mod client_hello {
                         #[cfg(feature = "tls12")]
                         using_ems: false,
                         done_retry: true,
-                        challenge: Some(challenge),
+                        challenge,
                         send_tickets: self.send_tickets,
                         extra_exts: self.extra_exts,
                     });
